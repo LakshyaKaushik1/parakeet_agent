@@ -1,7 +1,8 @@
+use chrono::format::Pad::Space;
 use ratatui::{
-    Terminal, backend::{self, CrosstermBackend}, layout::{Alignment, Constraint, Direction, Layout}, style::{Style, Styled, Stylize}, text::Line, widgets::{
-        Block, Borders, Clear, Paragraph,
-    },
+    Terminal, backend::{self, CrosstermBackend}, layout::{Alignment, Constraint, Direction, Layout, Rect}, style::{Style, Styled, Stylize}, text::Line, widgets::{
+        Block, Borders, Clear, Paragraph, Padding
+    }, Frame
 };
 
 use crossterm::{
@@ -10,17 +11,20 @@ use crossterm::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
+
+use tui_term::widget::{Cursor, PseudoTerminal};
+
 use std::{default, fmt::format, io::{self, Stdout}};
 use std::path::PathBuf;
 
 // Local file imports
 use crate::critical::{
-    APP_VERSION,
-    get_working_directory,
-    get_date_date_time,
+    self, APP_VERSION, get_date_date_time, get_working_directory,
 };
 
 use crate::colors;
+use crate::app::{App, ActivePanel};
+
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>; // Define the type of the Tui
 
@@ -42,9 +46,16 @@ pub fn restore() -> io::Result<()> {
     Ok(())
 }
 
+
 // Draws the Main Box
-pub fn draw(frame: &mut ratatui::Frame) {
+pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     
+    // Gets the active tab mode
+    let mode = match app.get_active_panel() {
+        ActivePanel::Terminal => " (Terminal) ",
+        ActivePanel::Agent => " (Agent) ",
+    };
+
     // define variable area and the theme of the app
     let area = frame.area();
     let theme = colors::parakeet_mode();
@@ -63,9 +74,9 @@ pub fn draw(frame: &mut ratatui::Frame) {
         .title_top(Line::from(format!(" ({}) ",cwd_left)).left_aligned().style(Style::default().fg(theme.directory)))
         .title_top(Line::from(title_center).centered())
         .title_top(Line::from(format!(" ({}) ",date_time_day_right)).right_aligned().style(Style::default().fg(theme.date_time)))
-        .style(Style::default())
-        .bg(theme.agent_bg)
+        .bg((theme.agent_bg))
         .border_style(Style::default().fg(theme.main_border))
+        .padding(Padding { left: (1), right: (1), top: (1), bottom: (0) }) // adds padding inside the main block.
         .borders(Borders::ALL);
 
     // Defining the inner blocks.
@@ -79,47 +90,114 @@ pub fn draw(frame: &mut ratatui::Frame) {
             Constraint::Min(0),
             Constraint::Length(5),
         ])
-        .split(inner_block);
+        .split(inner_block); 
 
     // Define that the top chunk is divided into 2 parts
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
-        .split(main_area[0]); // Give it top area in the vertical section.
-        
-    // Defining the terminal panel's heading 
-    let terminal_panel = Block::default()
-        .title(" (Terminal) ")
-        .borders(Borders::ALL)
-        .style(Style::default())
-        .border_style(Style::default().fg(theme.main_border))
-        .bg(theme.terminal_bg);
-    frame.render_widget(terminal_panel, top_chunks[0]); //rendering the terminal panel
+    if app.fullscreen(){   
+        match app.get_active_panel(){
+            ActivePanel::Terminal => render_terminal_panel(frame, app, main_area[0]),
+            ActivePanel::Agent => render_agent_panel(frame, app, main_area[0]), 
+        } 
+    }
+    
+    else {
+        let top_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(main_area[0]); // Give it top area in the vertical section.
 
-    // Defining the agent panel's heading
-    let agent_panel = Block::default()
-        .title(" (Agent) ")
-        .borders(Borders::ALL)
-        .style(Style::default())
-        .border_style(Style::default().fg(theme.main_border))
-        .bg(theme.agent_bg);
-    frame.render_widget(agent_panel, top_chunks[1]); //rendering the agent panel
+        render_terminal_panel(frame, app, top_chunks[0]);
+        render_agent_panel(frame, app, top_chunks[1]);
+    }
 
     // Bottom Input Box
-    let input_box = Paragraph::new("Type your query here...")
-        .block(
-            Block::default()
-                .title(" Input ").style(Style::default().fg(theme.input_text))
-                .borders(Borders::ALL)
-                .style(Style::default())
-                .bg(theme.input_bg)
-                .border_style(Style::default().fg(theme.main_border))
+    // let input_box = Paragraph::new("Type your query here...")
+    //     .block(
+    //         Block::default()
+    //             .title(" Input ").style(Style::default().fg(theme.input_text))
+    //             .borders(Borders::ALL)
+    //             .style(Style::default())
+    //             .bg(theme.agent_bg)
+    //             .border_style(Style::default().fg(theme.main_border))
 
-        );
-    frame.render_widget(input_box, main_area[1]);
+    //     );
+    input_area(frame, app, main_area[1]);
+    // frame.render_widget(input_box, main_area[1]);
+}
+
+fn render_terminal_panel(frame: &mut Frame, app: &mut App, area : Rect){
+
+    // Defines the focused mode is terminal
+    let is_focused = app.get_active_panel() == ActivePanel::Terminal;
+
+    // Defines text style for it
+    let text_style = colors::text_style_for(is_focused);
+
+    // Defines border style for it
+    let border_style = colors::border_style_for(is_focused);
+
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2);
+    app.resize_terminal(inner_height, inner_width);
+
+    // Defining the terminal panel's heading 
+    let terminal_panel = Block::default()
+        .title_top(Line::from(" (Terminal) ").right_aligned())
+        .borders(Borders::ALL)
+        .style(Style::default())
+        .border_style(border_style)
+        .bg(colors::parakeet_mode().terminal_bg);
+
+    let pseudo_terminal = PseudoTerminal::new(app.screen())
+    .block(terminal_panel)
+    .cursor(Cursor::default().symbol("|"));
+
+    frame.render_widget(pseudo_terminal, area);
+}
+
+fn render_agent_panel(frame: &mut Frame, app: &App, area : Rect){
+
+    // Defines the focused mode is terminal
+    let is_focused = app.get_active_panel() == ActivePanel::Agent;
+
+    // Defines text style for it
+    let text_style = colors::text_style_for(is_focused);
+
+    // Defines border style for it
+    let border_style = colors::border_style_for(is_focused);
+
+    // Defining the terminal panel's heading 
+    let agent_panel = Block::default()
+        .title_top(Line::from(" (Agent) ").right_aligned())
+        .borders(Borders::ALL)
+        .style(Style::default())
+        .border_style(border_style)
+        .bg(colors::parakeet_mode().terminal_bg);
+
+    frame.render_widget(agent_panel, area);
+}
+
+fn input_area(frame : &mut Frame, app : &App, area : Rect) {
+    let block = Block::default()
+        .title_top(Line::from(" Input Panel ").left_aligned())
+        .borders(Borders::ALL)
+        .border_style(colors::parakeet_mode().main_border);
     
+    let prompt_prefix = format!("{} ", critical::PROMPT_GLYPH);
+
+    let prompt_text = format!("{}{}", prompt_prefix, app.return_input_buffer());
+
+    let paragraph = Paragraph::new(prompt_text).style(Style::default().fg(colors::parakeet_mode().input_text))
+    .block(block);
+
+    frame.render_widget(paragraph, area);
+
+    let prefix_width = prompt_prefix.chars().count() as u16;
+    let cursor_x = area.x + 1 + prefix_width + app.cursor_position() as u16;
+    let cursor_y = area.y + 1;
+    frame.set_cursor_position((cursor_x, cursor_y));
 
 }

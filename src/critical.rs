@@ -7,6 +7,8 @@ use crossterm::event::KeyCode::Home;
 // Fetch the app version from cargo.toml 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub const PROMPT_GLYPH: &str = "❯";
+
 // Get current working directory
 pub fn get_working_directory() -> std::io::Result<String>{ // Result<String> makes sure that it returns a string type
     let cwd = env::current_dir()?; // Gets current directory
